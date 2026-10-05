@@ -223,6 +223,8 @@ export interface LineResult {
   promotion: boolean;
   sans: string[];
   plies: number;
+  /** Material change for `pov` after the first exchange in the line settles. */
+  settledDelta: number;
 }
 
 /**
@@ -233,6 +235,8 @@ export function playLine(fen: string, uci: string[], pov: Color, maxPlies = 8): 
   const chess = new Chess(fen);
   const start = balance(chess, pov);
   const sans: string[] = [];
+  const deltas: number[] = [];
+  const captures: boolean[] = [];
   let promotion = false;
   let i = 0;
   for (; i < uci.length; i++) {
@@ -248,6 +252,8 @@ export function playLine(fen: string, uci: string[], pov: Color, maxPlies = 8): 
       break;
     }
     sans.push(m.san);
+    deltas.push(balance(chess, pov) - start);
+    captures.push(!!m.captured);
     if (m.promotion) promotion = true;
     if (chess.isGameOver()) {
       i++;
@@ -255,7 +261,10 @@ export function playLine(fen: string, uci: string[], pov: Color, maxPlies = 8): 
     }
   }
   const mate = chess.isCheckmate();
+  // The first point where the next move isn't a capture: the opening exchange is over.
+  const settle = captures.findIndex((_, k) => !captures[k + 1]);
   return {
+    settledDelta: settle >= 0 ? deltas[settle] : 0,
     materialDelta: balance(chess, pov) - start,
     mate,
     matedSide: mate ? (chess.turn() as Color) : undefined,

@@ -1,9 +1,9 @@
 import { Chess } from 'chess.js';
 import { classifyMove, phaseOf } from './classify';
 import { MATED, flip, gameAccuracy, moveAccuracy } from './eval';
-import { explainMove } from './explain';
+import { explainMove, type Perspective } from './explain';
 import { parsePgn } from './pgn';
-import type { Classification, Color, EngineLike, EngineLine, GameMeta, GameReview, PlyAnalysis, Score } from './types';
+import type { Classification, Color, EngineLike, EngineLine, Explanation, GameMeta, GameReview, PlyAnalysis, Score } from './types';
 
 export const ALL_CLASSES: Classification[] = [
   'brilliant',
@@ -32,8 +32,8 @@ export interface ReviewOptions {
   signal?: AbortSignal;
 }
 
-/** Evaluate a position, handling finished games without asking the engine. */
-async function evaluate(engine: EngineLike, fen: string, depth: number, multipv: number): Promise<EngineLine[]> {
+/** Evaluate a position (top `multipv` lines, side-to-move POV), handling finished games without asking the engine. */
+export async function evaluatePosition(engine: EngineLike, fen: string, depth: number, multipv: number): Promise<EngineLine[]> {
   const c = new Chess(fen);
   if (c.isCheckmate()) return [{ move: '', pv: [], score: MATED, depth }];
   if (c.isDraw() || c.isStalemate()) return [{ move: '', pv: [], score: { cp: 0 }, depth }];
@@ -59,6 +59,43 @@ export function detectUserColor(meta: GameMeta, username?: string): Color | unde
   return undefined;
 }
 
+/** Whose point of view a move's explanation is written from. */
+export function perspectiveFor(mover: Color, user?: Color): Perspective {
+  if (!user) return 'neutral';
+  return mover === user ? 'self' : 'opponent';
+}
+
+/**
+ * Re-create the explanation for `plies[i]` written for `user` (cheap, no engine).
+ * Lets the review re-word moves when you tell it which side you played, and
+ * upgrades reviews saved before explanations knew your side.
+ */
+export function explainPly(plies: PlyAnalysis[], i: number, user?: Color): Explanation {
+  const p = plies[i];
+  const next = plies[i + 1]?.lines[0];
+  const reply = p.reply ?? (next?.move ? next : undefined);
+  const perspective = perspectiveFor(p.color, user);
+  // Without the opponent's best reply the explanation would lose detail; the stored one is already right for 'self'.
+  if (!reply && perspective === 'self') return p.explanation;
+  return explainMove({
+    fenBefore: p.fenBefore,
+    playedUci: p.uci,
+    playedSan: p.san,
+    color: p.color,
+    moveNumber: p.moveNumber,
+    phase: p.phase,
+    classification: p.classification,
+    epLoss: p.epLoss,
+    winBefore: p.winBefore,
+    winAfter: p.winAfter,
+    lines: p.lines,
+    reply,
+    afterScore: p.color === 'w' ? p.evalAfter : flip(p.evalAfter),
+    prevUci: plies[i - 1]?.uci,
+    perspective,
+  });
+}
+
 export async function reviewGame(meta: GameMeta, engine: EngineLike, opts: ReviewOptions = {}): Promise<GameReview> {
   const depth = opts.depth ?? 14;
   const multipv = opts.multipv ?? 3;
@@ -67,10 +104,11 @@ export async function reviewGame(meta: GameMeta, engine: EngineLike, opts: Revie
   const evals: EngineLine[][] = [];
   for (let i = 0; i < fens.length; i++) {
     if (opts.signal?.aborted) throw new DOMException('Review cancelled', 'AbortError');
-    evals.push(await evaluate(engine, fens[i], depth, multipv));
+    evals.push(await evaluatePosition(engine, fens[i], depth, multipv));
     opts.onProgress?.(i + 1, fens.length);
   }
 
+  const userColor = detectUserColor(meta, opts.username);
   const inc = parseIncrement(meta.timeControl);
   const lastClock: Partial<Record<Color, number>> = {};
   const plies: PlyAnalysis[] = [];
@@ -108,6 +146,7 @@ export async function reviewGame(meta: GameMeta, engine: EngineLike, opts: Revie
       reply,
       afterScore,
       prevUci: prev?.uci,
+      perspective: perspectiveFor(mv.color, userColor),
     });
 
     let timeSpent: number | undefined;
@@ -147,6 +186,7 @@ export async function reviewGame(meta: GameMeta, engine: EngineLike, opts: Revie
       explanation,
       clock: mv.clock,
       timeSpent,
+      reply,
     });
     accs[mv.color].push(moveAccuracy(cls.winBefore * 100, cls.winAfter * 100));
     counts[mv.color][cls.classification]++;
@@ -158,7 +198,7 @@ export async function reviewGame(meta: GameMeta, engine: EngineLike, opts: Revie
 
   return {
     meta,
-    userColor: detectUserColor(meta, opts.username),
+    userColor,
     plies,
     accuracy: { w: gameAccuracy(accs.w), b: gameAccuracy(accs.b) },
     counts,

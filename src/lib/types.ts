@@ -120,6 +120,8 @@ export interface PlyAnalysis {
   clock?: number;
   /** Seconds spent on this move, if known. */
   timeSpent?: number;
+  /** The opponent's best reply to this move (scores from their POV). Missing in older reviews. */
+  reply?: EngineLine;
 }
 
 export interface GameMeta {

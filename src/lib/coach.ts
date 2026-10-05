@@ -1,6 +1,14 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { formatScore } from './eval';
-import type { PlyAnalysis } from './types';
+import type { Color, Explanation, PlyAnalysis } from './types';
+
+export interface CoachContext {
+  studentRating?: number;
+  /** Which side the student played, if known. */
+  studentColor?: Color;
+  /** The automatic explanation, already worded for the student. */
+  explanation?: Explanation;
+}
 
 // Optional: ask Claude to explain a move in plain language, grounded in the
 // engine facts we already computed. The user supplies their own API key, which
@@ -12,24 +20,33 @@ Explain *why* the played move is good or bad and what idea the better move carri
 Name squares and pieces. Prefer short paragraphs. End with one practical takeaway the student can apply in future games.
 Keep it under 180 words.`;
 
-export function buildPrompt(p: PlyAnalysis, studentRating?: number): string {
+export function buildPrompt(p: PlyAnalysis, ctx: CoachContext = {}): string {
+  const { studentRating, studentColor } = ctx;
+  const explanation = ctx.explanation ?? p.explanation;
+  const mover = p.color === 'w' ? 'White' : 'Black';
+  const whose = !studentColor
+    ? `Played by ${mover}.`
+    : p.color === studentColor
+      ? `This is the student's own move (the student played ${mover}).`
+      : `This move was played by the student's opponent (${mover}); the student played ${studentColor === 'w' ? 'White' : 'Black'}. Explain it from the student's side: what it means for them, and how they could respond or punish it.`;
   const lines = p.lines
     .map((l, i) => `${i + 1}. ${l.pv.slice(0, 8).join(' ')} (eval for side to move: ${formatScore(l.score)})`)
     .join('\n');
   return [
     `Position (FEN, before the move): ${p.fenBefore}`,
-    `Side to move: ${p.color === 'w' ? 'White' : 'Black'}${studentRating ? ` (student rated ~${studentRating})` : ''}`,
+    `Side to move: ${mover}${studentRating ? ` (student rated ~${studentRating})` : ''}`,
+    whose,
     `Move played: ${p.san} — classified as "${p.classification}", losing ${Math.round(p.epLoss * 100)}% win probability (${Math.round(p.winBefore * 100)}% → ${Math.round(p.winAfter * 100)}%).`,
     `Engine best move: ${p.bestSan}`,
     `Engine top lines (UCI):\n${lines}`,
-    `Automatic notes: ${p.explanation.headline} ${p.explanation.details.join(' ')}`,
+    `Automatic notes: ${explanation.headline} ${explanation.details.join(' ')}`,
     `Game phase: ${p.phase}`,
     '',
     'Explain this moment to the student.',
   ].join('\n');
 }
 
-export async function askCoach(apiKey: string, p: PlyAnalysis, studentRating?: number): Promise<string> {
+export async function askCoach(apiKey: string, p: PlyAnalysis, ctx: CoachContext = {}): Promise<string> {
   const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
   try {
     const response = await client.beta.messages.create({
@@ -39,7 +56,7 @@ export async function askCoach(apiKey: string, p: PlyAnalysis, studentRating?: n
       fallbacks: 'default',
       output_config: { effort: 'medium' },
       system: SYSTEM,
-      messages: [{ role: 'user', content: buildPrompt(p, studentRating) }],
+      messages: [{ role: 'user', content: buildPrompt(p, ctx) }],
     });
     if (response.stop_reason === 'refusal') return 'Claude declined to answer this one.';
     return response.content

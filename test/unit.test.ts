@@ -61,6 +61,17 @@ describe('motifs', () => {
   });
 });
 
+describe('wording', () => {
+  it('describes amounts of material and matches verbs to "you"', async () => {
+    const { materialAmount, agree } = await import('../src/lib/explain');
+    expect(materialAmount(7)).toBe('a rook and two pawns');
+    expect(materialAmount(12)).toBe("more than a queen's worth of material");
+    expect(agree('you', 'wins a piece')).toBe('win a piece');
+    expect(agree('you', 'pushes a passed pawn')).toBe('push a passed pawn');
+    expect(agree('your opponent', 'wins a piece')).toBe('wins a piece');
+  });
+});
+
 describe('describeMove', () => {
   it('explains a fork', () => {
     const f = describeMove('r3k3/8/8/1N6/8/8/8/4K3 w - - 0 1', 'b5c7');

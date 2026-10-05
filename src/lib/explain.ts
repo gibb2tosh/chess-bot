@@ -23,6 +23,45 @@ import {
 import { uciLineToSan } from './pgn';
 import type { Classification, Color, EngineLine, Explanation, Idea, Motif, Phase, Score } from './types';
 
+/**
+ * Who the explanation is written for, relative to the side that moved:
+ * 'self' = you played it, 'opponent' = your opponent played it,
+ * 'neutral' = we don't know which side you are (uses "White"/"Black").
+ */
+export type Perspective = 'self' | 'opponent' | 'neutral';
+
+interface Voice {
+  p: Perspective;
+  /** The side that moved, as a subject: "you" / "your opponent" / "White". */
+  mover: string;
+  /** Possessive for the side that moved: "your" / "their" / "White's". */
+  moverPoss: string;
+  /** The other side, as a subject: "your opponent" / "you" / "Black". */
+  other: string;
+}
+
+function voiceFor(p: Perspective, color: Color): Voice {
+  if (p === 'self') return { p, mover: 'you', moverPoss: 'your', other: 'your opponent' };
+  if (p === 'opponent') return { p, mover: 'your opponent', moverPoss: 'their', other: 'you' };
+  const name = (c: Color) => (c === 'w' ? 'White' : 'Black');
+  return { p, mover: name(color), moverPoss: `${name(color)}'s`, other: name(opp(color)) };
+}
+
+/** Pick the "you have" / "your opponent has" form of a verb. */
+function verb(subject: string, youForm: string, otherForm: string): string {
+  return subject === 'you' ? youForm : otherForm;
+}
+
+/** Make a third-person verb phrase ("wins a piece") agree with its subject ("you win a piece"). */
+export function agree(subject: string, phrase: string): string {
+  if (subject !== 'you') return phrase;
+  const [first, ...rest] = phrase.split(' ');
+  let base = first;
+  if (/(sh|ch|x|ss)es$/.test(first)) base = first.slice(0, -2);
+  else if (first.endsWith('s')) base = first.slice(0, -1);
+  return [base, ...rest].join(' ');
+}
+
 export interface ExplainInput {
   fenBefore: string;
   playedUci: string;
@@ -41,6 +80,8 @@ export interface ExplainInput {
   /** The move before this one (to recognise recaptures). */
   prevUci?: string;
   afterScore: Score;
+  /** Who the text is written for (default: the player who made the move). */
+  perspective?: Perspective;
 }
 
 interface MoveFacts {
@@ -58,6 +99,23 @@ export function materialWord(n: number): string {
   if (a >= 3) return 'a piece';
   if (a >= 2) return 'the exchange';
   return a >= 1.5 ? 'two pawns' : 'a pawn';
+}
+
+/** A plain-English amount of material, e.g. "a rook and two pawns". */
+export function materialAmount(n: number): string {
+  const v = Math.round(Math.abs(n));
+  const names: Record<number, string> = {
+    1: 'a pawn',
+    2: 'two pawns',
+    3: 'a piece',
+    4: 'a piece and a pawn',
+    5: 'a rook',
+    6: 'a rook and a pawn',
+    7: 'a rook and two pawns',
+    8: 'a rook and a piece',
+    9: "a queen's worth of material",
+  };
+  return names[v] ?? (v > 9 ? "more than a queen's worth of material" : 'a little material');
 }
 
 function pieceAt(chess: Chess, s: string) {
@@ -157,14 +215,16 @@ export function describeMove(fen: string, uci: string, prevUci?: string): MoveFa
   }
 
   // Discovered attack: another of our pieces now attacks something valuable it didn't before.
+  let discoveredTarget: string | null = null;
   for (const p of pieces(chess, color)) {
     if (p.square === to) continue;
     for (const t of attackedBy(chess, p.square)) {
       if (threatsBefore.has(p.square + t.square)) continue;
       if (t.type === 'k' || VALUE[t.type] >= 3) {
         phrases.push(
-          `uncovers an attack by the ${NAME[p.type]} on ${t.type === 'k' ? 'the king' : `the ${NAME[t.type]} on ${t.square}`}`,
+          `uncovers an attack on ${t.type === 'k' ? 'the king' : `the ${NAME[t.type]} on ${t.square}`} from the ${NAME[p.type]} on ${p.square}`,
         );
+        discoveredTarget = t.square;
         motifs.push('discovered-attack');
         break;
       }
@@ -177,6 +237,7 @@ export function describeMove(fen: string, uci: string, prevUci?: string): MoveFa
     const threatened = attackedBy(chess, to).filter(
       (t) =>
         t.type !== 'k' &&
+        t.square !== discoveredTarget &&
         !threatsBefore.has(from + t.square) &&
         (VALUE[t.type] > VALUE[piece.type] || chess.attackers(t.square, t.color).length === 0),
     );
@@ -258,16 +319,19 @@ export function describeLine(
     return { text: 'leads to checkmate', motifs };
   }
   // Lines are cut off mid-sequence sometimes; only claim material the engine's eval backs up.
-  const credible = score?.cp === undefined || score.cp >= res.materialDelta * 100 - 200;
-  if (res.materialDelta >= 1 && credible) {
+  const credible = (d: number) => score?.cp === undefined || score.cp >= d * 100 - 200;
+  // Long lines can also rack up more material than a saturated eval (~+10) shows, once the
+  // losing side stops defending; then fall back to what the first exchange wins.
+  const delta = credible(res.materialDelta) ? res.materialDelta : credible(res.settledDelta) ? res.settledDelta : 0;
+  if (delta >= 1) {
     motifs.push('material-win');
     if (res.promotion) motifs.push('promotion');
-    return { text: `wins ${materialWord(res.materialDelta)}`, motifs, delta: res.materialDelta };
+    return { text: `wins ${materialWord(delta)}`, motifs, delta };
   }
   return { text: '', motifs, delta: res.materialDelta };
 }
 
-function joinPhrases(ps: string[]): string {
+export function joinPhrases(ps: string[]): string {
   const xs = ps.filter(Boolean);
   if (xs.length <= 1) return xs.join('');
   return xs.slice(0, -1).join(', ') + ' and ' + xs[xs.length - 1];
@@ -285,7 +349,8 @@ function moveNo(fen: string): string {
 }
 
 /** Positional observations comparing the played move with the engine's choice. */
-function positionalNotes(input: ExplainInput, played: MoveFacts, best: MoveFacts | null): { notes: string[]; motifs: Motif[] } {
+function positionalNotes(input: ExplainInput, played: MoveFacts, best: MoveFacts | null, v: Voice): { notes: string[]; motifs: Motif[] } {
+  const say = (self: string, opponent: string, neutral = self) => (v.p === 'self' ? self : v.p === 'opponent' ? opponent : neutral);
   const notes: string[] = [];
   const motifs: Motif[] = [];
   const { fenBefore, playedUci, color, phase, moveNumber } = input;
@@ -313,12 +378,22 @@ function positionalNotes(input: ExplainInput, played: MoveFacts, best: MoveFacts
       !played.motifs.includes('defence')
     ) {
       notes.push(
-        'Bringing the queen out this early lets your opponent develop with tempo by attacking it. Develop knights and bishops first.',
+        say(
+          'Bringing the queen out this early lets your opponent develop with tempo by attacking it. Develop knights and bishops first.',
+          'Their queen came out early — you can develop your pieces while attacking it and gain time.',
+          `${v.moverPoss} queen came out early, so ${v.other} can develop with tempo by attacking it.`,
+        ),
       );
       motifs.push('early-queen');
     }
     if (best?.motifs.includes('castling') && !played.motifs.includes('castling')) {
-      notes.push('Castling was the priority here — your king is still in the centre where lines can open quickly.');
+      notes.push(
+        say(
+          'Castling was the priority here — your king is still in the centre where lines can open quickly.',
+          'They should have castled — their king is still in the centre. Look to open lines against it.',
+          `Castling was the priority here — ${v.moverPoss} king is still in the centre.`,
+        ),
+      );
       motifs.push('castling', 'king-safety');
     } else if (
       best?.motifs.includes('development') &&
@@ -326,7 +401,13 @@ function positionalNotes(input: ExplainInput, played: MoveFacts, best: MoveFacts
       undeveloped >= 2 &&
       !played.motifs.includes('material-win')
     ) {
-      notes.push(`You still have ${undeveloped} minor pieces at home. In the opening, getting pieces out usually beats other plans.`);
+      notes.push(
+        say(
+          `You still have ${undeveloped} minor pieces at home. In the opening, getting pieces out usually beats other plans.`,
+          `They still have ${undeveloped} minor pieces at home — you're ahead in development, so look to open the position.`,
+          `${v.mover} still has ${undeveloped} minor pieces at home; developing them was the priority.`,
+        ),
+      );
       motifs.push('development');
     }
     if (
@@ -337,7 +418,12 @@ function positionalNotes(input: ExplainInput, played: MoveFacts, best: MoveFacts
       !played.motifs.includes('material-win') &&
       input.epLoss >= 0.05
     ) {
-      notes.push('This moves an already-developed piece again while others are still undeveloped — that costs time.');
+      notes.push(
+        say(
+          'This moves an already-developed piece again while others are still undeveloped — that costs time.',
+          'They moved an already-developed piece again instead of developing — that hands you time.',
+        ),
+      );
       motifs.push('development');
     }
   }
@@ -347,7 +433,13 @@ function positionalNotes(input: ExplainInput, played: MoveFacts, best: MoveFacts
   if (king && piece.type === 'p' && ['g', 'h', 'b', 'c'].includes(king.square[0])) {
     const shield = kingShieldSquares(king.square, color);
     if (shield.includes(playedUci.slice(0, 2) as Square) && input.epLoss >= 0.05) {
-      notes.push('Pushing a pawn in front of your castled king loosens your shelter and gives the opponent targets.');
+      notes.push(
+        say(
+          'Pushing a pawn in front of your castled king loosens your shelter and gives the opponent targets.',
+          'They pushed a pawn in front of their castled king — that loosens their shelter and gives you targets.',
+          `Pushing a pawn in front of the castled king loosens ${v.moverPoss} shelter.`,
+        ),
+      );
       motifs.push('king-safety');
     }
   }
@@ -356,17 +448,34 @@ function positionalNotes(input: ExplainInput, played: MoveFacts, best: MoveFacts
   const pfBefore = pawnFeatures(before, color);
   const pfAfter = pawnFeatures(after, color);
   if (pfAfter.doubled > pfBefore.doubled && input.epLoss >= 0.03) {
-    notes.push('This leaves you with doubled pawns, which are hard to defend and can\'t protect each other.');
+    notes.push(
+      say(
+        "This leaves you with doubled pawns, which are hard to defend and can't protect each other.",
+        'This leaves them with doubled pawns — a long-term weakness you can target.',
+        `This leaves ${v.mover} with doubled pawns, which are hard to defend.`,
+      ),
+    );
     motifs.push('pawn-structure');
   } else if (pfAfter.isolated > pfBefore.isolated && input.epLoss >= 0.03) {
-    notes.push('This creates an isolated pawn — with no neighbours to protect it, it can become a long-term target.');
+    notes.push(
+      say(
+        'This creates an isolated pawn — with no neighbours to protect it, it can become a long-term target.',
+        'This gives them an isolated pawn — with no neighbours to protect it, it can become your target.',
+      ),
+    );
     motifs.push('pawn-structure');
   }
 
   // Trading when ahead.
   const bal = balance(before, color);
   if (bal >= 2 && played.phrases.some((p) => p.startsWith('trades')) && input.epLoss < 0.05) {
-    notes.push('Good technique: when you are ahead in material, trading pieces brings you closer to a winning endgame.');
+    notes.push(
+      say(
+        'Good technique: when you are ahead in material, trading pieces brings you closer to a winning endgame.',
+        "They're ahead in material and trading pieces — good technique. When you're behind, try to avoid trades and keep pieces on.",
+        `Good technique: ${v.mover} is ahead in material, and trading pieces brings a winning endgame closer.`,
+      ),
+    );
     motifs.push('trade-when-ahead');
   }
 
@@ -379,7 +488,13 @@ function positionalNotes(input: ExplainInput, played: MoveFacts, best: MoveFacts
       const mobPlayed = mobility(after.fen(), color);
       const mobBest = mobility(afterBest.fen(), color);
       if (mobBest - mobPlayed >= 6) {
-        notes.push('The engine\'s move gives your pieces noticeably more scope — look for moves that activate your worst piece.');
+        notes.push(
+          say(
+            "The engine's move gives your pieces noticeably more scope — look for moves that activate your worst piece.",
+            "Their move was passive — the engine's choice would have activated their pieces much more.",
+            "The engine's move gives the pieces noticeably more scope.",
+          ),
+        );
         motifs.push('piece-activity');
       }
     } catch {
@@ -396,6 +511,8 @@ export function explainMove(input: ExplainInput): Explanation {
   const bestUci = best?.move ?? playedUci;
   const bestSan = uciLineToSan(fenBefore, [bestUci])[0] ?? bestUci;
   const isBest = bestUci === playedUci;
+  const v = voiceFor(input.perspective ?? 'self', color);
+  const say = (self: string, opponent: string, neutral = self) => (v.p === 'self' ? self : v.p === 'opponent' ? opponent : neutral);
 
   const played = describeMove(fenBefore, playedUci, input.prevUci);
   const bestFacts = !isBest && best ? describeMove(fenBefore, bestUci, input.prevUci) : null;
@@ -429,9 +546,16 @@ export function explainMove(input: ExplainInput): Explanation {
 
   const doesWhat = (facts: MoveFacts | null, line: { text: string; delta?: number }) => {
     const ps = facts?.phrases.slice(0, line.text.includes('checkmate') ? 1 : 2) ?? [];
-    // Only mention the line's material result if it adds to what the move itself grabs.
-    const lineAdds = line.text && (line.delta === undefined || line.delta > (facts?.gain ?? 0) + 0.5);
-    const xs = lineAdds ? [...ps.filter((p) => !(p.startsWith('trades') && line.text.startsWith('wins'))), line.text] : ps;
+    const gain = facts?.gain ?? 0;
+    // Only mention the line's material result if it adds to what the move itself grabs
+    // ("wins the rook on d7 … and nets a rook and a pawn in total", not "… and wins a rook").
+    let lineText = line.text;
+    if (lineText && gain > 0 && line.delta !== undefined) {
+      lineText = line.delta >= gain + 2 ? `comes out ${materialAmount(line.delta)} ahead overall` : '';
+    } else if (lineText && line.delta !== undefined && line.delta <= gain + 0.5) {
+      lineText = '';
+    }
+    const xs = lineText ? [...ps.filter((p) => !(p.startsWith('trades') && lineText.startsWith('wins'))), lineText] : ps;
     return joinPhrases(xs.filter((x, i, a) => x && a.indexOf(x) === i));
   };
 
@@ -440,11 +564,22 @@ export function explainMove(input: ExplainInput): Explanation {
 
   switch (classification) {
     case 'brilliant':
-      headline = `Brilliant! ${playedSan} gives up material, but it works${bestLine.text ? ` — it ${bestLine.text}` : ''}.`;
-      details.push('A sacrifice that the opponent cannot profitably accept. These are hard to find — great calculation.');
+      headline = `${say('Brilliant! ', 'Brilliant move by your opponent: ')}${playedSan} gives up material, but it works${bestLine.text ? ` — it ${bestLine.text}` : ''}.`;
+      details.push(
+        say(
+          'A sacrifice that the opponent cannot profitably accept. These are hard to find — great calculation.',
+          "A sound sacrifice — taking the material doesn't work out for you.",
+          'A sacrifice that cannot be profitably accepted.',
+        ),
+      );
       break;
-    case 'great':
-      headline = `Great move. ${playedSan} was the only move that keeps your position${input.winBefore > 0.6 ? ' winning' : ' together'}.`;
+    case 'great': {
+      const keeps = input.winBefore > 0.6 ? ' winning' : ' together';
+      headline = say(
+        `Great move. ${playedSan} was the only move that keeps your position${keeps}.`,
+        `Strong play by your opponent: ${playedSan} was the only move that keeps their position${keeps}.`,
+        `Great move. ${playedSan} was the only move that keeps ${v.moverPoss} position${keeps}.`,
+      );
       {
         const second = lines[1];
         if (second) {
@@ -454,16 +589,22 @@ export function explainMove(input: ExplainInput): Explanation {
         }
       }
       break;
+    }
     case 'best':
-      headline = `${playedSan} is the best move${playedWhat ? ` — it ${playedWhat}` : ''}.`;
+      headline = say(
+        `${playedSan} is the best move${playedWhat ? ` — it ${playedWhat}` : ''}.`,
+        `Your opponent found the best move, ${playedSan}${playedWhat ? ` — it ${playedWhat}` : ''}.`,
+      );
       break;
     case 'excellent':
-    case 'good':
-      headline = `${playedSan} is a ${classification === 'excellent' ? 'strong' : 'reasonable'} move${playedWhat ? ` that ${playedWhat}` : ''}.`;
+    case 'good': {
+      const kind = classification === 'excellent' ? 'strong' : 'reasonable';
+      headline = `${say('', "Your opponent's ")}${playedSan} is a ${kind} move${playedWhat ? ` that ${playedWhat}` : ''}.`;
       if (!isBest) details.push(`The engine slightly prefers ${bestSan}${bestWhat ? `, which ${bestWhat}` : ''}.`);
       break;
+    }
     case 'forced':
-      headline = `${playedSan} was the only legal move.`;
+      headline = say(`${playedSan} was the only legal move.`, `${playedSan} was your opponent's only legal move.`);
       break;
     case 'book':
       headline = `${playedSan} is a standard opening move.`;
@@ -474,24 +615,24 @@ export function explainMove(input: ExplainInput): Explanation {
       let reason = '';
       let mentionedBest = false;
       if (reply && reply.score.mate !== undefined && reply.score.mate > 0) {
-        reason = `it allows ${replySan}, and your opponent has a forced mate in ${reply.score.mate}`;
+        reason = `it allows ${replySan}, and ${v.other} ${verb(v.other, 'have', 'has')} a forced mate in ${reply.score.mate}`;
         allowed.push('mate');
         if (reply.score.mate <= 3) allowed.push('mate-threat');
       } else if (newlyHung.length && refute.motifs.includes('material-win')) {
         const p = newlyHung[0];
-        reason = `it leaves your ${NAME[p.type]} on ${p.square} unprotected — ${replySan} ${refute.text}`;
+        reason = `it leaves ${v.moverPoss} ${NAME[p.type]} on ${p.square} unprotected — ${replySan} ${refute.text}`;
         allowed.push('hanging-piece', 'material-win');
       } else if (replyFacts?.motifs.includes('fork')) {
         reason = `it walks into ${replySan}, which ${replyFacts.phrases.find((x) => x.startsWith('forks'))}`;
         allowed.push('fork');
       } else if (refute.text && refute.motifs.includes('material-win')) {
-        reason = `after ${replySan} your opponent ${refute.text}`;
+        reason = `after ${replySan} ${v.other} ${agree(v.other, refute.text)}`;
         allowed.push('material-win');
       } else if (classification === 'miss' || (bestLine.text && input.winBefore - input.winAfter >= 0.1)) {
         reason = `it misses ${bestSan}, which ${bestWhat || 'keeps a clear advantage'}`;
         mentionedBest = true;
       } else if (replyFacts && replyFacts.phrases.length && !replyFacts.phrases[0].startsWith('recaptures')) {
-        reason = `it lets your opponent play ${replySan}, which ${joinPhrases(replyFacts.phrases.slice(0, 2))}`;
+        reason = `it lets ${v.other} play ${replySan}, which ${joinPhrases(replyFacts.phrases.slice(0, 2))}`;
       } else {
         reason = `${bestSan} was stronger${bestWhat ? ` — it ${bestWhat}` : ''}`;
         mentionedBest = true;
@@ -501,30 +642,52 @@ export function explainMove(input: ExplainInput): Explanation {
       }
       for (const m of refute.motifs) allowed.push(m);
 
-      headline = `${playedSan} is ${label}: ${reason}.`;
+      headline = `${say('', "Your opponent's ")}${playedSan} is ${label}: ${reason}.`;
       if (!mentionedBest && bestSan !== playedSan) {
-        details.push(`Better was ${bestSan}${bestWhat ? `, which ${bestWhat}` : ''}.`);
+        details.push(`${say('Better was', 'Their best was')} ${bestSan}${bestWhat ? `, which ${bestWhat}` : ''}.`);
       }
       if (classification === 'miss') {
-        details.push('Your opponent had just made an error. When that happens, look for checks, captures and threats first — there is often a tactic.');
+        details.push(
+          say(
+            'Your opponent had just made an error. When that happens, look for checks, captures and threats first — there is often a tactic.',
+            "You had just made an error and they didn't punish it — you got away with one.",
+            'This came right after an error by the other side, which went unpunished.',
+          ),
+        );
       }
       const drop = Math.round(input.epLoss * 100);
-      details.push(`This cost roughly ${drop}% of your winning chances (${Math.round(input.winBefore * 100)}% → ${Math.round(input.winAfter * 100)}%).`);
+      const before = Math.round(input.winBefore * 100);
+      const after = Math.round(input.winAfter * 100);
+      details.push(
+        say(
+          `This cost roughly ${drop}% of your winning chances (${before}% → ${after}%).`,
+          `Good news for you: your winning chances went from ${100 - before}% to ${100 - after}%.`,
+          `This cost ${v.mover} roughly ${drop}% winning chances (${before}% → ${after}%).`,
+        ),
+      );
     }
   }
 
-  const pos = positionalNotes(input, played, bestFacts);
+  const pos = positionalNotes(input, played, bestFacts, v);
   details.push(...pos.notes);
   const isBad = ['inaccuracy', 'mistake', 'blunder', 'miss'].includes(classification);
   if (isBad) allowed.push(...pos.motifs);
   else playedMotifs.push(...pos.motifs);
 
   // When the position was already lost/won and stays so, say that explicitly.
-  if (isBad && input.winAfter > 0.9) details.push('You are still winning, but this makes the job harder than it needs to be.');
+  if (isBad && input.winAfter > 0.9) {
+    details.push(
+      say(
+        'You are still winning, but this makes the job harder than it needs to be.',
+        "They're still winning, but this gives you more chances to fight back.",
+        `${v.mover} is still winning, but this makes the job harder.`,
+      ),
+    );
+  }
 
   const ideas: Idea[] = [];
   if (best) ideas.push(idea(isBest ? `Main line after ${moveNo(fenBefore)} ${bestSan}` : `Best: ${moveNo(fenBefore)} ${bestSan}`, fenBefore, best.pv));
-  if (reply && isBad) ideas.push(idea(`Why ${playedSan} fails`, fenAfter, reply.pv));
+  if (reply && isBad) ideas.push(idea(say(`Why ${playedSan} fails`, `How to punish ${playedSan}`), fenAfter, reply.pv));
   if (lines[1] && classification === 'great') ideas.push(idea('Next-best try', fenBefore, lines[1].pv));
 
   return {

@@ -5,6 +5,8 @@ import { metaFromPgn } from '../src/lib/pgn';
 import { extractPuzzles } from '../src/lib/puzzles';
 import { buildProfile } from '../src/lib/profile';
 import { botMove } from '../src/lib/bot';
+import { analyseMove, findThreat, threatSentence } from '../src/lib/explore';
+import { explainPly } from '../src/lib/review';
 import { createNodeEngine } from './nodeEngine';
 
 const { engine, quit } = createNodeEngine();
@@ -82,4 +84,41 @@ describe('full review pipeline with Stockfish', () => {
       expect(() => new Chess(fen).move({ from: mv.slice(0, 2), to: mv.slice(2, 4), promotion: mv[4] })).not.toThrow();
     }
   }, 60_000);
+
+  it('words the review from your side of the board', async () => {
+    // alice (White) wins with Scholar's mate; bob (Black) blunders with 3...Nf6.
+    const meta = metaFromPgn(PGN);
+    const asWhite = await reviewGame(meta, engine, { depth: 10, username: 'alice' });
+    const i = asWhite.plies.findIndex((p) => p.san === 'Nf6');
+    const opp = asWhite.plies[i].explanation;
+    expect(opp.headline).toMatch(/^Your opponent's Nf6 is a blunder: it allows Qxf7#, and you have a forced mate in 1\./);
+    expect(opp.details.join(' ')).toMatch(/your winning chances went from \d+% to 100%/);
+    expect(opp.ideas.map((x) => x.label)).toContain('How to punish Nf6');
+    // The same move re-worded for the other player, and for "unknown side".
+    expect(explainPly(asWhite.plies, i, 'b').headline).toMatch(/^Nf6 is a blunder: it allows Qxf7#, and your opponent has a forced mate in 1\./);
+    expect(explainPly(asWhite.plies, i, undefined).headline).toMatch(/^Nf6 is a blunder: it allows Qxf7#, and White has a forced mate in 1\./);
+    // Motifs (used by Insights) don't depend on the wording.
+    expect(explainPly(asWhite.plies, i, 'b').allowed).toEqual(opp.allowed);
+  }, 60_000);
+
+  it('gives instant feedback on moves you try, with threats', async () => {
+    const fen = 'r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3';
+    const threat = await findThreat(engine, fen, 'w', 10);
+    expect(threat?.mate).toBe(true);
+    expect(threat?.san[0]).toBe('Qxf7#');
+    expect(threatSentence(threat!, 'b')).toBe('Your opponent threatens Qxf7#, which is checkmate.');
+    expect(threatSentence(threat!, 'w')).toBe('You threaten Qxf7#, which is checkmate.');
+
+    const bad = await analyseMove(engine, fen, 'g8f6', { depth: 10, perspective: 'self' });
+    expect(bad.classification).toBe('blunder');
+    expect(bad.replySan[0]).toBe('Qxf7#');
+    expect(bad.explanation.headline).toMatch(/allows Qxf7#/);
+
+    const good = await analyseMove(engine, fen, 'g7g6', { depth: 10, perspective: 'self' });
+    expect(['best', 'excellent', 'good', 'great']).toContain(good.classification);
+    // g6 attacks the queen: that's now Black's threat.
+    expect(good.threat?.san[0]).toBe('gxh5');
+    expect(good.threat?.summary).toMatch(/queen/);
+  }, 60_000);
 });
+

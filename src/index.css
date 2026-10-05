@@ -870,3 +870,78 @@ main {
   cursor: pointer;
   color: var(--muted);
 }
+
+/* Review: tools under the board, your-analysis panel, threats */
+.board-tools {
+  justify-content: space-between;
+}
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+.explore-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem;
+  margin: 0.6rem 0;
+  padding: 0.4rem;
+  background: var(--surface-2);
+  border-radius: 8px;
+}
+.reply-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin: 0.5rem 0;
+  padding: 0.45rem 0.6rem;
+  border-left: 3px solid var(--bad);
+  background: var(--surface-2);
+  border-radius: 0 8px 8px 0;
+}
+.threat {
+  margin: 0.5rem 0;
+  padding: 0.4rem 0.6rem;
+  border-left: 3px solid var(--warn);
+  background: var(--surface-2);
+  border-radius: 0 8px 8px 0;
+}
+.threat.muted {
+  border-left-color: var(--border);
+}
+.best-here {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.6rem 0;
+}
+.best-move {
+  text-align: left;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.side-picker {
+  margin-bottom: 0.8rem;
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid var(--border);
+}
+.side-picker p {
+  margin: 0 0 0.4rem;
+}
+
+.alt-answer {
+  margin: 0.6rem 0;
+  padding: 0.5rem 0.7rem;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-2);
+  border-radius: 0 8px 8px 0;
+}
+.alt-answer p {
+  margin: 0 0 0.4rem;
+}

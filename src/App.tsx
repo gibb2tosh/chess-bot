@@ -258,6 +258,11 @@ export default function App() {
             claudeKey={settings.useClaude ? settings.anthropicKey : undefined}
             onPractice={startPractice}
             onSavePuzzle={(p) => setPuzzles(store.addPuzzles([p]))}
+            onSetSide={async (side) => {
+              const updated = { ...current, userColor: side };
+              await reviewStore.saveReview(updated);
+              setReviews((rs) => rs.map((r) => (r.meta.id === updated.meta.id ? updated : r)));
+            }}
           />
         )}
         {view === 'practice' && <PracticePage key={practice ? `${practice.fen}|${practice.label}` : 'free'} setup={practice} />}
