@@ -272,6 +272,9 @@ main {
 
 /* Review layout */
 .review {
+  /* Explanations differ in length from move to move; don't let the browser's
+     scroll anchoring shift the page to compensate. */
+  overflow-anchor: none;
   display: grid;
   grid-template-columns: minmax(0, 560px) minmax(0, 1fr);
   gap: 1rem;

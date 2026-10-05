@@ -85,6 +85,12 @@ export default function App() {
   );
   const queueState = useSyncExternalStore(queue.subscribe, queue.getState);
 
+  // Each page (and each review) starts at the top, rather than wherever the
+  // previous page happened to be scrolled.
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [view, currentId]);
+
   useEffect(() => {
     reviewStore
       .loadReviews()
