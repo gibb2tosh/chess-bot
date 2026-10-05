@@ -1,7 +1,9 @@
-import type { GameReview, Puzzle } from './types';
+import type { Puzzle } from './types';
 
-// Everything lives in the browser (localStorage). Nothing is sent anywhere
-// except chess.com / lichess (public APIs) and, if you enable it, Anthropic.
+// Everything lives in the browser. Nothing is sent anywhere except chess.com /
+// lichess (public APIs) and, if you enable it, Anthropic. Settings and puzzles
+// are small and live in localStorage; reviews are big and live in IndexedDB
+// (see reviewStore.ts).
 
 export interface Settings {
   username: string;
@@ -11,8 +13,7 @@ export interface Settings {
   useClaude: boolean;
 }
 
-const KEYS = { settings: 'cc.settings', reviews: 'cc.reviews', puzzles: 'cc.puzzles', seen: 'cc.seen' };
-const MAX_REVIEWS = 80;
+const KEYS = { settings: 'cc.settings', puzzles: 'cc.puzzles', seen: 'cc.seen' };
 
 export const DEFAULT_SETTINGS: Settings = { username: '', depth: 14, autoWatch: false, anthropicKey: '', useClaude: false };
 
@@ -39,23 +40,6 @@ export function loadSettings(): Settings {
 }
 export function saveSettings(s: Settings) {
   write(KEYS.settings, s);
-}
-
-export function loadReviews(): GameReview[] {
-  return read<GameReview[]>(KEYS.reviews, []);
-}
-
-/** Save (or replace) a review; drops the oldest ones if storage is full. */
-export function saveReview(r: GameReview): GameReview[] {
-  let all = [r, ...loadReviews().filter((x) => x.meta.id !== r.meta.id)].slice(0, MAX_REVIEWS);
-  while (!write(KEYS.reviews, all) && all.length > 1) all = all.slice(0, Math.floor(all.length * 0.8));
-  return all;
-}
-
-export function deleteReview(id: string): GameReview[] {
-  const all = loadReviews().filter((x) => x.meta.id !== id);
-  write(KEYS.reviews, all);
-  return all;
 }
 
 export function loadPuzzles(): Puzzle[] {

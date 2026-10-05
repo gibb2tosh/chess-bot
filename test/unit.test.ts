@@ -134,6 +134,9 @@ describe('pgn', () => {
   it('reads clocks and openings', () => {
     const g = parsePgn('[White "a"]\n[Black "b"]\n\n1. e4 {[%clk 0:03:00]} e5 {[%clk 0:02:58.5]} *');
     expect(g.moves.map((m) => m.clock)).toEqual([180, 178.5]);
+    // Malformed header lines from other tools are skipped rather than rejecting the game.
+    expect(parsePgn('[White "a"]\n[X-Source "tool"]\n\n1. e4 e5 *').moves).toHaveLength(2);
+    expect(() => parsePgn('[White "a"]\n\n1. e4 Ke7?? Qxe9 *')).toThrow();
     expect(openingFromEcoUrl('https://www.chess.com/openings/Italian-Game-Two-Knights-Defense-4.d3')).toBe('Italian Game Two Knights Defense');
   });
 });

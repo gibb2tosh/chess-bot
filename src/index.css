@@ -15,6 +15,13 @@
   --eval-white: #f7f7f2;
   --eval-black: #3a3833;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 2px 8px rgba(0, 0, 0, 0.04);
+  /* Chart series: validated categorical slots 1-3 (light). */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --grid: #ece8e1;
+  --good-text: #006300;
+  --bad-text: #b42318;
   color-scheme: light;
 }
 
@@ -32,6 +39,12 @@
     --bad: #ef6b5b;
     --warn: #f0b04a;
     --shadow: none;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --grid: #3a3834;
+    --good-text: #6cc07c;
+    --bad-text: #ef6b5b;
     color-scheme: dark;
   }
 }
@@ -48,6 +61,12 @@
   --bad: #ef6b5b;
   --warn: #f0b04a;
   --shadow: none;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --grid: #3a3834;
+  --good-text: #6cc07c;
+  --bad-text: #ef6b5b;
   color-scheme: dark;
 }
 
@@ -70,9 +89,16 @@ h3 {
 }
 button,
 input,
+select,
 textarea {
   font: inherit;
   color: inherit;
+}
+select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.35rem 0.5rem;
 }
 button {
   background: var(--surface-2);
@@ -660,6 +686,17 @@ main {
   main {
     padding: 0.75rem 16px;
   }
+  .topbar {
+    gap: 0.4rem;
+    padding: 0.5rem 16px;
+  }
+  .topbar nav {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+  .tab {
+    padding: 0.35rem 0.55rem;
+  }
   .review {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -674,4 +711,158 @@ main {
     display: block;
     overflow-x: auto;
   }
+}
+
+/* Bulk review */
+.bulk-status {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.row.space-between {
+  justify-content: space-between;
+}
+.progress.wide {
+  flex: none;
+  width: 100%;
+  height: 8px;
+}
+
+/* Toast with action */
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  cursor: default;
+}
+.toast-action {
+  background: transparent;
+  border-color: currentColor;
+  color: inherit;
+  padding: 0.15rem 0.6rem;
+  font-weight: 600;
+}
+.toast-close {
+  background: transparent;
+  border: none;
+  color: inherit;
+  padding: 0 0.2rem;
+  opacity: 0.7;
+}
+
+/* Progress: comparison tiles + charts */
+.compare {
+  margin-bottom: 1rem;
+}
+.compare .stats {
+  margin-top: 0.3rem;
+}
+.delta {
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.delta.good {
+  color: var(--good-text);
+}
+.delta.bad {
+  color: var(--bad-text);
+}
+.chart-grid-layout {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.2rem;
+}
+.chart {
+  margin: 0;
+  min-width: 0;
+}
+.chart-title {
+  font-weight: 600;
+  font-size: 0.92rem;
+  margin-bottom: 0.2rem;
+}
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 0.2rem;
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.legend-key {
+  width: 14px;
+  height: 2px;
+  border-radius: 1px;
+}
+.chart-plot {
+  position: relative;
+  width: 100%;
+}
+.chart-plot svg {
+  display: block;
+  touch-action: pan-y;
+}
+.chart-plot svg:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.chart-grid {
+  stroke: var(--grid);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+.chart-axis {
+  fill: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.chart-endlabel {
+  fill: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.chart-crosshair {
+  stroke: var(--muted);
+  stroke-width: 1;
+}
+.chart-tooltip {
+  position: absolute;
+  top: -4px;
+  width: 150px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.8rem;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+  transform: translateY(-100%);
+}
+.tt-head {
+  font-weight: 600;
+  margin-bottom: 0.15rem;
+}
+.tt-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.tt-key {
+  width: 10px;
+  height: 2px;
+  flex: none;
+}
+.chart-table {
+  margin-top: 0.3rem;
+  font-size: 0.82rem;
+}
+.chart-table summary {
+  cursor: pointer;
+  color: var(--muted);
 }

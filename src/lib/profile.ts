@@ -1,5 +1,6 @@
 import { moveAccuracy } from './eval';
 import { MOTIF_LABEL } from './motifs';
+import { MIN_PLIES, buildTrends, type Trends } from './trends';
 import type { Classification, Color, GameReview, Motif, Phase, PlyAnalysis } from './types';
 
 export interface PhaseStats {
@@ -42,6 +43,7 @@ export interface Profile {
   punishRate: { chances: number; punished: number };
   conversion: { winningGames: number; converted: number };
   openings: OpeningStats[];
+  trends: Trends;
   insights: Insight[];
 }
 
@@ -70,7 +72,8 @@ function baseSeconds(tc?: string): number | undefined {
 }
 
 export function buildProfile(reviews: GameReview[]): Profile {
-  const mine = reviews.filter((r) => r.userColor);
+  // Aborted / very short games say little about your play and skew accuracy.
+  const mine = reviews.filter((r) => r.userColor && r.plies.length >= MIN_PLIES);
   const byPhaseRaw: Record<Phase, { accs: number[]; errors: number }> = {
     opening: { accs: [], errors: 0 },
     middlegame: { accs: [], errors: 0 },
@@ -209,6 +212,7 @@ export function buildProfile(reviews: GameReview[]): Profile {
     punishRate: punish,
     conversion,
     openings: openingStats,
+    trends: buildTrends(mine),
     insights: [],
   };
   profile.insights = deriveInsights(profile);
@@ -233,9 +237,61 @@ export const LICHESS_THEME: Partial<Record<Motif, string>> = {
   defence: 'defensiveMove',
 };
 
+const BLUNDER_CHECK = 'Before each move, ask: "what are their checks, captures and threats after this?"';
+
+/** How to describe a theme that showed up in your mistakes: what you did, and what to do instead. */
+const ALLOWED_TEXT: Partial<Record<Motif, { did: string; tip: string }>> = {
+  'hanging-piece': { did: 'left a piece undefended', tip: BLUNDER_CHECK },
+  fork: { did: 'walked into a fork', tip: BLUNDER_CHECK },
+  pin: { did: 'walked into a pin', tip: BLUNDER_CHECK },
+  skewer: { did: 'allowed a skewer', tip: BLUNDER_CHECK },
+  'discovered-attack': { did: 'allowed a discovered attack', tip: BLUNDER_CHECK },
+  'mate-threat': { did: 'allowed a mating attack', tip: 'Check your king first: count the attackers near it before every move.' },
+  mate: { did: 'allowed checkmate', tip: 'Check your king first: count the attackers near it before every move.' },
+  'back-rank': { did: 'left your back rank weak', tip: 'Make luft (a flight square for your king) once the middlegame starts.' },
+  'trapped-piece': { did: 'let a piece get trapped', tip: 'Before putting a piece deep in enemy territory, check it has a way back.' },
+  promotion: { did: 'let a pawn through to promote', tip: 'Stop passed pawns early — blockade them with a piece.' },
+  'king-safety': { did: 'weakened your king', tip: 'Avoid pushing the pawns in front of your castled king unless you are attacking.' },
+  development: { did: 'still had undeveloped pieces', tip: 'In the opening, develop knights and bishops and castle before starting operations.' },
+  'early-queen': { did: 'brought the queen out too early', tip: 'Develop minor pieces first; the queen is easy to chase around early on.' },
+  castling: { did: 'delayed castling', tip: 'Castle early unless there is a concrete reason not to.' },
+  'pawn-structure': { did: 'created pawn weaknesses (doubled or isolated pawns)', tip: 'Think twice before captures that wreck your pawn structure.' },
+  'piece-activity': { did: 'chose a passive move when an active one was available', tip: 'Ask "which is my worst piece?" and look for a move that improves it.' },
+  'center-control': { did: 'gave up the centre', tip: 'Keep pawns and pieces aimed at the centre squares (d4, e4, d5, e5).' },
+};
+
+const MISSED_TEXT: Partial<Record<Motif, string>> = {
+  defence: 'defensive moves that would have held the position',
+  'hanging-piece': 'chances to win an undefended piece',
+  fork: 'forks',
+  pin: 'pins',
+  skewer: 'skewers',
+  'discovered-attack': 'discovered attacks',
+  mate: 'checkmates',
+  'mate-threat': 'mating attacks',
+  promotion: 'promotions',
+  'passed-pawn': 'chances to push a passed pawn',
+};
+
+/** Themes that show up in almost every decent move, so they say little about your strengths. */
+const ROUTINE: Motif[] = ['material-win', 'development', 'center-control', 'defence', 'castling'];
+
 function deriveInsights(p: Profile): Insight[] {
   const out: Insight[] = [];
   if (p.games === 0) return out;
+
+  const { recent, earlier } = p.trends;
+  if (recent && earlier) {
+    const dAcc = Math.round((recent.accuracy - earlier.accuracy) * 10) / 10;
+    const dBl = Math.round((recent.blundersPerGame - earlier.blundersPerGame) * 10) / 10;
+    const span = `your last ${recent.games} games vs the ${earlier.games} before`;
+    if (dAcc >= 3) out.push({ kind: 'strength', title: 'Improving', detail: `Accuracy is up ${dAcc} points (${earlier.accuracy}% → ${recent.accuracy}%) over ${span}.` });
+    else if (dAcc <= -3)
+      out.push({ kind: 'weakness', title: 'Accuracy has dipped', detail: `Accuracy is down ${-dAcc} points (${earlier.accuracy}% → ${recent.accuracy}%) over ${span}. Tiredness and tilt are common causes — consider fewer, slower games.` });
+    if (dBl <= -0.3) out.push({ kind: 'strength', title: 'Fewer blunders', detail: `${earlier.blundersPerGame} → ${recent.blundersPerGame} blunders per game over ${span}.` });
+    else if (dBl >= 0.3)
+      out.push({ kind: 'weakness', title: 'More blunders lately', detail: `${earlier.blundersPerGame} → ${recent.blundersPerGame} blunders per game over ${span}. Do a blunder check (checks, captures, threats) before every move.` });
+  }
   const phases = (Object.entries(p.byPhase) as [Phase, PhaseStats][]).filter(([, s]) => s.moves >= 10);
   if (phases.length >= 2) {
     const best = [...phases].sort((a, b) => b[1].accuracy - a[1].accuracy)[0];
@@ -258,10 +314,13 @@ function deriveInsights(p: Profile): Insight[] {
   const topAllowed = p.allowed.filter(([m]) => m !== 'material-win').slice(0, 2);
   for (const [m, count] of topAllowed) {
     if (count < 2) continue;
+    const text = ALLOWED_TEXT[m];
     out.push({
       kind: 'weakness',
-      title: `Allowing: ${MOTIF_LABEL[m].toLowerCase()}`,
-      detail: `${count} of your mistakes let the opponent use a ${MOTIF_LABEL[m].toLowerCase().replace(/s$/, '')}. Before each move, ask: "what are their checks, captures and threats after this?"`,
+      title: `Recurring: ${MOTIF_LABEL[m].toLowerCase()}`,
+      detail: text
+        ? `In ${count} of your mistakes you ${text.did}. ${text.tip}`
+        : `${count} of your mistakes involved ${MOTIF_LABEL[m].toLowerCase()}. ${BLUNDER_CHECK}`,
       motif: m,
       drill: LICHESS_THEME[m],
     });
@@ -272,12 +331,12 @@ function deriveInsights(p: Profile): Insight[] {
     out.push({
       kind: 'weakness',
       title: `Missing: ${MOTIF_LABEL[m].toLowerCase()}`,
-      detail: `You missed ${count} chances involving ${MOTIF_LABEL[m].toLowerCase()}. Puzzles on this theme will sharpen your pattern recognition.`,
+      detail: `You missed ${count} ${MISSED_TEXT[m] ?? `chances involving ${MOTIF_LABEL[m].toLowerCase()}`}. Puzzles on this theme will sharpen your pattern recognition.`,
       motif: m,
       drill: LICHESS_THEME[m],
     });
   }
-  const topFound = p.found.filter(([m]) => !['material-win', 'development', 'center-control'].includes(m)).slice(0, 2);
+  const topFound = p.found.filter(([m]) => !ROUTINE.includes(m)).slice(0, 2);
   for (const [m, count] of topFound) {
     if (count < 3) continue;
     out.push({ kind: 'strength', title: `Good eye for ${MOTIF_LABEL[m].toLowerCase()}`, detail: `You found ${count} strong moves involving ${MOTIF_LABEL[m].toLowerCase()}.` });

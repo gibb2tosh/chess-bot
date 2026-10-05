@@ -1,5 +1,5 @@
 import { Chess } from 'chess.js';
-import type { Color, GameMeta } from './types';
+import type { Color, GameMeta, GameReview } from './types';
 
 export interface ParsedMove {
   ply: number;
@@ -25,9 +25,24 @@ function parseClock(comment: string | undefined): number | undefined {
   return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
 }
 
-export function parsePgn(pgn: string): ParsedGame {
+/** Load a PGN, retrying without malformed header lines (e.g. `[X-Foo "..."]`) that some tools write. */
+function loadLenient(pgn: string): Chess {
   const chess = new Chess();
-  chess.loadPgn(pgn);
+  try {
+    chess.loadPgn(pgn);
+  } catch (e) {
+    const cleaned = pgn
+      .split(/\r?\n/)
+      .filter((line) => !/^\s*\[/.test(line) || /^\s*\[[A-Za-z0-9_]+\s+"[^"]*"\]\s*$/.test(line))
+      .join('\n');
+    if (cleaned === pgn) throw e;
+    chess.loadPgn(cleaned);
+  }
+  return chess;
+}
+
+export function parsePgn(pgn: string): ParsedGame {
+  const chess = loadLenient(pgn);
   const headers: Record<string, string> = {};
   for (const [k, v] of Object.entries(chess.getHeaders())) if (v != null) headers[k] = String(v);
 
@@ -51,6 +66,30 @@ export function parsePgn(pgn: string): ParsedGame {
   });
   const startFen = history.length ? history[0].before : chess.fen();
   return { headers, startFen, moves };
+}
+
+/** Unix seconds from PGN date/time headers (prefers UTC + end time, as chess.com writes them). */
+export function pgnEndTime(headers: Record<string, string>): number | undefined {
+  const date = headers.EndDate ?? headers.UTCDate ?? headers.Date;
+  const m = date?.match(/^(\d{4})\.(\d{2})\.(\d{2})$/);
+  if (!m) return undefined;
+  const t = (headers.EndTime ?? headers.UTCTime ?? '00:00:00').match(/^(\d{1,2}):(\d{2}):(\d{2})/);
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), t ? Number(t[1]) : 0, t ? Number(t[2]) : 0, t ? Number(t[3]) : 0);
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined;
+}
+
+/** When a reviewed game was played (ms), falling back to when it was analysed. */
+export function gamePlayedAt(r: GameReview): number {
+  return r.meta.endTime ? r.meta.endTime * 1000 : r.analysedAt;
+}
+
+/** Number of half-moves in a PGN (cheap; doesn't validate moves). */
+export function countPlies(pgn: string): number {
+  try {
+    return parsePgn(pgn).moves.length;
+  } catch {
+    return 0;
+  }
 }
 
 function parseElo(v: string | undefined) {
@@ -77,6 +116,7 @@ export function metaFromPgn(pgn: string, extra: Partial<GameMeta> = {}): GameMet
     timeControl: headers.TimeControl,
     opening,
     eco: headers.ECO,
+    endTime: pgnEndTime(headers),
     pgn,
     source: 'pgn',
     ...extra,

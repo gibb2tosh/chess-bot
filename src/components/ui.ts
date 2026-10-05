@@ -21,5 +21,6 @@ export function timeAgo(unixSeconds?: number): string {
   const s = Date.now() / 1000 - unixSeconds;
   if (s < 3600) return `${Math.max(1, Math.round(s / 60))}m ago`;
   if (s < 86400) return `${Math.round(s / 3600)}h ago`;
-  return `${Math.round(s / 86400)}d ago`;
+  if (s < 45 * 86400) return `${Math.round(s / 86400)}d ago`;
+  return new Date(unixSeconds * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 }

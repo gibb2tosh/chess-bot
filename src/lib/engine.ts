@@ -39,10 +39,14 @@ export class UciEngine implements EngineLike {
   private listener: ((line: string) => void) | null = null;
   private ready: Promise<void>;
   private currentMultiPv = 1;
+  private dead: Error | null = null;
+  private rejectWaiter: ((e: Error) => void) | null = null;
 
   constructor(send: (cmd: string) => void) {
     this.send = send;
     this.ready = this.waitFor('uciok', () => send('uci')).then(() => this.isReady());
+    // A crash during start-up surfaces through analyse(); don't also report it as unhandled.
+    this.ready.catch(() => undefined);
   }
 
   /** Feed every output line from the engine here. */
@@ -50,12 +54,29 @@ export class UciEngine implements EngineLike {
     this.listener?.(line);
   }
 
+  /** True once the engine has crashed; create a new one. */
+  get isDead(): boolean {
+    return this.dead !== null;
+  }
+
+  /** Mark the engine as crashed: the pending request and all future ones reject. */
+  fail(error: Error) {
+    this.dead = error;
+    this.listener = null;
+    const reject = this.rejectWaiter;
+    this.rejectWaiter = null;
+    reject?.(error);
+  }
+
   private waitFor(token: string, kick: () => void, collect?: (line: string) => void): Promise<void> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      if (this.dead) return reject(this.dead);
+      this.rejectWaiter = reject;
       this.listener = (line) => {
         collect?.(line);
         if (line.startsWith(token)) {
           this.listener = null;
+          this.rejectWaiter = null;
           resolve();
         }
       };
@@ -63,26 +84,31 @@ export class UciEngine implements EngineLike {
     });
   }
 
+  /** Run engine work strictly one request at a time; a failure doesn't block later requests. */
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    const p = this.queue.then(fn);
+    this.queue = p.catch(() => undefined);
+    return p;
+  }
+
   private isReady() {
     return this.waitFor('readyok', () => this.send('isready'));
   }
 
   setOption(name: string, value: string | number) {
-    this.queue = this.queue.then(async () => {
+    return this.serial(async () => {
       await this.ready;
       this.send(`setoption name ${name} value ${value}`);
       await this.isReady();
     });
-    return this.queue;
   }
 
   newGame() {
-    this.queue = this.queue.then(async () => {
+    return this.serial(async () => {
       await this.ready;
       this.send('ucinewgame');
       await this.isReady();
     });
-    return this.queue;
   }
 
   analyse(fen: string, opts: AnalyseOptions): Promise<EngineLine[]> {
@@ -109,9 +135,7 @@ export class UciEngine implements EngineLike {
       );
       return [...best.entries()].sort((a, b) => a[0] - b[0]).map(([, l]) => l);
     };
-    const p = this.queue.then(run);
-    this.queue = p.catch(() => undefined);
-    return p;
+    return this.serial(run);
   }
 }
 
@@ -124,19 +148,23 @@ export function createBrowserEngine(): UciEngine {
     const data = typeof e.data === 'string' ? e.data : String(e.data);
     for (const line of data.split('\n')) engine.onLine(line.trim());
   };
+  worker.onerror = (e) => {
+    engine.fail(new Error(`Stockfish crashed: ${e.message || 'unknown error'}`));
+    worker.terminate();
+  };
   return engine;
 }
 
 let shared: UciEngine | null = null;
-/** One shared analysis engine for the whole app. */
+/** One shared analysis engine for the whole app (recreated if it crashes). */
 export function getAnalysisEngine(): UciEngine {
-  if (!shared) shared = createBrowserEngine();
+  if (!shared || shared.isDead) shared = createBrowserEngine();
   return shared;
 }
 
 let botEngine: UciEngine | null = null;
 /** A second engine instance for the sparring bot so analysis and play don't block each other. */
 export function getBotEngine(): UciEngine {
-  if (!botEngine) botEngine = createBrowserEngine();
+  if (!botEngine || botEngine.isDead) botEngine = createBrowserEngine();
   return botEngine;
 }

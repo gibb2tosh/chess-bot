@@ -1,15 +1,25 @@
 {
   "manifest_version": 3,
   "name": "Chess Coach for chess.com",
-  "version": "0.1.0",
-  "description": "Adds a 'Review with Chess Coach' button to chess.com games, opening an explained review of the game.",
-  "permissions": ["storage"],
+  "version": "0.2.0",
+  "description": "Adds a 'Review with Chess Coach' button to finished chess.com games (never during a game).",
+  "permissions": [
+    "storage"
+  ],
   "options_page": "options.html",
-  "action": { "default_title": "Chess Coach settings", "default_popup": "options.html" },
+  "action": {
+    "default_title": "Chess Coach settings",
+    "default_popup": "options.html"
+  },
   "content_scripts": [
     {
-      "matches": ["https://www.chess.com/game/*", "https://www.chess.com/analysis/game/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://www.chess.com/*"
+      ],
+      "js": [
+        "lib.js",
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]
