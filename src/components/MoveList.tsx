@@ -10,8 +10,16 @@ interface Props {
 
 export function MoveList({ plies, current, onSelect }: Props) {
   const ref = useRef<HTMLDivElement>(null);
+  // Keep the current move visible by scrolling the list itself. (scrollIntoView
+  // would also scroll the page, pushing the explanation out of view.)
   useEffect(() => {
-    ref.current?.querySelector('.mv.active')?.scrollIntoView({ block: 'nearest' });
+    const list = ref.current;
+    const el = list?.querySelector<HTMLElement>('.mv.active');
+    if (!list || !el) return;
+    const top = el.offsetTop; // relative to the list, which is position: relative
+    const bottom = top + el.offsetHeight;
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
   }, [current]);
 
   const rows: { n: number; w?: PlyAnalysis; b?: PlyAnalysis }[] = [];

@@ -519,6 +519,7 @@ main {
 }
 
 .move-list {
+  position: relative;
   max-height: 300px;
   overflow-y: auto;
   font-size: 0.9rem;
